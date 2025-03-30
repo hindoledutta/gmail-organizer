@@ -3,3 +3,4 @@ credentials.json
 token.pkl
 __pycache__/
 .DS_Store
+token.json

@@ -35,63 +35,63 @@ def get_or_create_label(service, label_name):
     print(f"✅ Created label: {label_name}")
     return label['id']
 
-    def classify_email_with_gpt(subject, sender, snippet):
-        # Simple hard filter for known promotional senders
-        promo_domains = ["quora.com", "substack.com", "noreply@", "mailer@", "email.quora.com"]
-        if any(domain in sender.lower() for domain in promo_domains):
-            return "Promotions", 0.0
+def classify_email_with_gpt(subject, sender, snippet):
+    # Simple hard filter for known promotional senders
+    promo_domains = ["quora.com", "substack.com", "noreply@", "mailer@", "email.quora.com"]
+    if any(domain in sender.lower() for domain in promo_domains):
+        return "Promotions", 0.0
 
-        try:
-            examples = """
-            Examples:
-            Email: From: "Quora" | Subject: "New answer to a question you follow"
-            → Classification: Promotions
+    try:
+        examples = """
+        Examples:
+        Email: From: "Quora" | Subject: "New answer to a question you follow"
+        → Classification: Promotions
 
-            Email: From: "John <john@example.com>" | Subject: "Dinner tomorrow?"
-            → Classification: Personal
+        Email: From: "John <john@example.com>" | Subject: "Dinner tomorrow?"
+        → Classification: Personal
 
-            Email: From: "Swiggy" | Subject: "20% Off This Week"
-            → Classification: Promotions
+        Email: From: "Swiggy" | Subject: "20% Off This Week"
+        → Classification: Promotions
 
-            Email: From: "Mom <mom@gmail.com>" | Subject: "Your flight details"
-            → Classification: Personal
-            """
+        Email: From: "Mom <mom@gmail.com>" | Subject: "Your flight details"
+        → Classification: Personal
+        """
 
-            prompt = f"""
-            You are an AI email organizer. Classify the email into one of the following categories:
-            Bank-Statements, CreditCard-Statements, Travel-Bookings, Other-Bookings, OTPs, Purchases, Social, Finance, Promotions, Personal.
+        prompt = f"""
+        You are an AI email organizer. Classify the email into one of the following categories:
+        Bank-Statements, CreditCard-Statements, Travel-Bookings, Other-Bookings, OTPs, Purchases, Social, Finance, Promotions, Personal.
 
-            Only classify as "Personal" if the email is from a known contact (friend, family, colleague). Do NOT classify newsletters, platforms (like Quora/Substack), or promotional emails as Personal.
+        Only classify as "Personal" if the email is from a known contact (friend, family, colleague). Do NOT classify newsletters, platforms (like Quora/Substack), or promotional emails as Personal.
 
-            {examples}
+        {examples}
 
-            Email to classify:
-            From: {sender}
-            Subject: {subject}
-            Snippet: {snippet}
+        Email to classify:
+        From: {sender}
+        Subject: {subject}
+        Snippet: {snippet}
 
-            Only respond with the exact category name.
-            """
+        Only respond with the exact category name.
+        """
 
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
 
-            category = response['choices'][0]['message']['content'].strip()
-            usage = response['usage']
-            prompt_tokens = usage['prompt_tokens']
-            completion_tokens = usage['completion_tokens']
-            total_tokens = usage['total_tokens']
-            cost = (prompt_tokens * 0.0005 + completion_tokens * 0.0015) / 1000
+        category = response['choices'][0]['message']['content'].strip()
+        usage = response['usage']
+        prompt_tokens = usage['prompt_tokens']
+        completion_tokens = usage['completion_tokens']
+        total_tokens = usage['total_tokens']
+        cost = (prompt_tokens * 0.0005 + completion_tokens * 0.0015) / 1000
 
-            print(f"🧠 {category} | 💵 ${cost:.6f} | 🧮 {total_tokens} tokens")
-            return category if category in CATEGORIES else "Uncategorized", cost
+        print(f"🧠 {category} | 💵 ${cost:.6f} | 🧮 {total_tokens} tokens")
+        return category if category in CATEGORIES else "Uncategorized", cost
 
-        except Exception as e:
-            print(f"❌ GPT error: {e}")
-            return "Uncategorized", 0.0
+    except Exception as e:
+        print(f"❌ GPT error: {e}")
+        return "Uncategorized", 0.0
 
 
 def already_classified(label_ids, all_label_ids):
