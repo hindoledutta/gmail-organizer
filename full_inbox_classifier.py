@@ -21,7 +21,7 @@ MAX_EMAILS = 2000  # Change to more later if needed
 def get_or_create_label(service, label_name):
     existing_labels = service.users().labels().list(userId='me').execute().get('labels', [])
     label_ids = {label['name']: label['id'] for label in existing_labels}
-    
+
     if label_name in label_ids:
         return label_ids[label_name]
 
@@ -57,7 +57,7 @@ def get_or_create_label(service, label_name):
             → Classification: Personal
             """
 
-                    prompt = f"""
+            prompt = f"""
             You are an AI email organizer. Classify the email into one of the following categories:
             Bank-Statements, CreditCard-Statements, Travel-Bookings, Other-Bookings, OTPs, Purchases, Social, Finance, Promotions, Personal.
 
