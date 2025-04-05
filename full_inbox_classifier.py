@@ -1,161 +1,162 @@
 import os
 import time
+from datetime import datetime
 from gmail_auth import authenticate_gmail
 from dotenv import load_dotenv
 import openai
+from googleapiclient.errors import HttpError
 
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-CATEGORIES = [
-    "Bank-Statements", "CreditCard-Statements", "Travel-Bookings", "Other-Bookings",
-    "OTPs", "Purchases", "Social", "Finance", "Promotions", "Personal", "Uncategorized"
-]
+# --- Helper Function: Safe Execute with Rate Limit Handling ---
+def safe_execute(api_call, max_retries=5):
+    retry = 0
+    while retry < max_retries:
+        try:
+            return api_call.execute()
+        except HttpError as e:
+            if e.resp.status == 429:
+                wait_time = 60  # Default wait time (you could parse header info here)
+                print(f"Rate limit exceeded. Waiting for {wait_time} seconds before retrying...")
+                time.sleep(wait_time)
+                retry += 1
+            else:
+                raise
+    raise Exception("Max retries exceeded for API call.")
 
-LABEL_PREFIX = "GO/"
-FULL_LABELS = [f"{LABEL_PREFIX}{cat}" for cat in CATEGORIES]
-
-BATCH_SIZE = 500
-MAX_EMAILS = 2000  # Change to more later if needed
-
+# --- Helper Function: Get or Create a Label ---
 def get_or_create_label(service, label_name):
-    existing_labels = service.users().labels().list(userId='me').execute().get('labels', [])
+    response = safe_execute(service.users().labels().list(userId='me', includeSpamTrash=False))
+    existing_labels = response.get('labels', [])
     label_ids = {label['name']: label['id'] for label in existing_labels}
-
     if label_name in label_ids:
         return label_ids[label_name]
-
     label_obj = {
         "name": label_name,
         "labelListVisibility": "labelShow",
         "messageListVisibility": "show"
     }
-
-    label = service.users().labels().create(userId='me', body=label_obj).execute()
+    label = safe_execute(service.users().labels().create(userId='me', body=label_obj))
     print(f"✅ Created label: {label_name}")
     return label['id']
 
+# --- Helper Function: Classify an Email Using OpenAI ---
 def classify_email_with_gpt(subject, sender, snippet):
-    # Simple hard filter for known promotional senders
-    promo_domains = ["quora.com", "substack.com", "noreply@", "mailer@", "email.quora.com"]
-    if any(domain in sender.lower() for domain in promo_domains):
-        return "Promotions", 0.0
-
     try:
-        examples = """
-        Examples:
-        Email: From: "Quora" | Subject: "New answer to a question you follow"
-        → Classification: Promotions
-
-        Email: From: "John <john@example.com>" | Subject: "Dinner tomorrow?"
-        → Classification: Personal
-
-        Email: From: "Swiggy" | Subject: "20% Off This Week"
-        → Classification: Promotions
-
-        Email: From: "Mom <mom@gmail.com>" | Subject: "Your flight details"
-        → Classification: Personal
-        """
-
         prompt = f"""
-        You are an AI email organizer. Classify the email into one of the following categories:
-        Bank-Statements, CreditCard-Statements, Travel-Bookings, Other-Bookings, OTPs, Purchases, Social, Finance, Promotions, Personal.
+You are an AI email organizer. Classify the email based on the subject, sender, and snippet.
+Categories: Bank-Statements, CreditCard-Statements, Travel-Bookings, Other-Bookings, OTPs, Purchases, Social, Finance, Promotions, Personal, Uncategorized.
 
-        Only classify as "Personal" if the email is from a known contact (friend, family, colleague). Do NOT classify newsletters, platforms (like Quora/Substack), or promotional emails as Personal.
+Only classify as "Personal" if the email is from a known contact (friend, family, colleague). Do NOT classify newsletters, platforms (like Quora/Substack), or promotional emails as Personal.
 
-        {examples}
+Email:
+From: {sender}
+Subject: {subject}
+Snippet: {snippet}
 
-        Email to classify:
-        From: {sender}
-        Subject: {subject}
-        Snippet: {snippet}
-
-        Only respond with the exact category name.
-        """
-
+Respond with only the exact category name.
+"""
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+            temperature=0.3
         )
-
-        category = response['choices'][0]['message']['content'].strip()
-        usage = response['usage']
-        prompt_tokens = usage['prompt_tokens']
-        completion_tokens = usage['completion_tokens']
-        total_tokens = usage['total_tokens']
-        cost = (prompt_tokens * 0.0005 + completion_tokens * 0.0015) / 1000
-
-        print(f"🧠 {category} | 💵 ${cost:.6f} | 🧮 {total_tokens} tokens")
-        return category if category in CATEGORIES else "Uncategorized", cost
-
+        category = response["choices"][0]["message"]["content"].strip()
+        usage = response["usage"]
+        cost = (usage["prompt_tokens"] * 0.0005 + usage["completion_tokens"] * 0.0015) / 1000
+        print(f"🧠 {category} | 💵 ${cost:.6f} | 🧮 {usage['total_tokens']} tokens")
+        # Validate against allowed categories
+        allowed = ["Bank-Statements", "CreditCard-Statements", "Travel-Bookings", "Other-Bookings", "OTPs", "Purchases", "Social", "Finance", "Promotions", "Personal", "Uncategorized"]
+        return category if category in allowed else "Uncategorized", cost
     except Exception as e:
         print(f"❌ GPT error: {e}")
         return "Uncategorized", 0.0
 
+# --- Helper Function: Check if Email Already Classified ---
+def already_classified(label_ids, go_label_ids):
+    return any(lid in label_ids for lid in go_label_ids)
 
-def already_classified(label_ids, all_label_ids):
-    return any(lid in label_ids for lid in all_label_ids)
-
+# --- Main Function: Process Entire Inbox ---
 def classify_entire_inbox():
     service = authenticate_gmail()
-    all_labels = service.users().labels().list(userId='me').execute().get('labels', [])
+    # Get all labels (excluding spam/trash)
+    all_labels = safe_execute(service.users().labels().list(userId='me', includeSpamTrash=False)).get('labels', [])
     label_name_to_id = {label['name']: label['id'] for label in all_labels}
-    go_label_ids = [label_name_to_id.get(name) for name in FULL_LABELS if name in label_name_to_id]
+    LABEL_PREFIX = "GO/"
+    categories = ["Bank-Statements", "CreditCard-Statements", "Travel-Bookings", "Other-Bookings", "OTPs", "Purchases", "Social", "Finance", "Promotions", "Personal", "Uncategorized"]
+    go_labels = [f"{LABEL_PREFIX}{cat}" for cat in categories]
+    go_label_ids = [label_name_to_id.get(name) for name in go_labels if name in label_name_to_id]
 
     total_cost = 0.0
     processed = 0
-
+    skipped = 0
+    classified_count = 0
+    pages = 0
     next_page_token = None
 
-    while processed < MAX_EMAILS:
-        response = service.users().messages().list(
-            userId='me',
-            maxResults=BATCH_SIZE,
-            pageToken=next_page_token
-        ).execute()
+    print(f"⏰ Starting run at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    while True:
+        response = safe_execute(service.users().messages().list(
+            userId='me',
+            maxResults=50,
+            pageToken=next_page_token,
+            includeSpamTrash=False
+        ))
         messages = response.get('messages', [])
         if not messages:
             print("✅ Done: No more messages to process.")
             break
 
         next_page_token = response.get('nextPageToken')
+        new_classifications = 0
+        pages += 1
 
         for msg in messages:
-            if processed >= MAX_EMAILS:
+            if processed >= 10000:  # Change to your desired max
                 break
 
-            msg_data = service.users().messages().get(userId='me', id=msg['id']).execute()
-            headers = msg_data['payload'].get('headers', [])
+            msg_data = safe_execute(service.users().messages().get(userId='me', id=msg['id']))
+            headers = msg_data.get('payload', {}).get('headers', [])
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
             sender = next((h['value'] for h in headers if h['name'] == 'From'), '')
             snippet = msg_data.get('snippet', '')
             label_ids = msg_data.get('labelIds', [])
 
             if already_classified(label_ids, go_label_ids):
-                continue  # Skip already classified
+                skipped += 1
+                continue
 
             print(f"\n📨 [{processed+1}] From: {sender} | Subject: {subject}")
-
             category, cost = classify_email_with_gpt(subject, sender, snippet)
             label_name = f"{LABEL_PREFIX}{category}"
             label_id = get_or_create_label(service, label_name)
-
-            if label_id:
-                service.users().messages().modify(
+            try:
+                safe_execute(service.users().messages().modify(
                     userId='me',
                     id=msg['id'],
                     body={"addLabelIds": [label_id]}
-                ).execute()
-
+                ))
                 print(f"🏷️ Labeled with: {label_name}")
+                new_classifications += 1
+                classified_count += 1
+            except Exception as e:
+                print(f"❌ Failed to label email {msg['id']}: {e}")
 
             total_cost += cost
             processed += 1
-            time.sleep(1)  # Avoid rate limits
+            time.sleep(1)
 
-    print(f"\n✅ Completed {processed} emails")
+        print(f"📦 Processed Page {pages}: {new_classifications} classified, {skipped} skipped so far")
+        if new_classifications == 0:
+            print("✅ No unclassified emails found in this batch. Exiting.")
+            break
+
+    print(f"\n✅ Finished")
+    print(f"📨 Total processed: {processed}")
+    print(f"🏷️ Total classified: {classified_count}")
+    print(f"⏭️ Total skipped (already labeled): {skipped}")
     print(f"💰 Total estimated cost: ${total_cost:.4f}")
 
 if __name__ == "__main__":
