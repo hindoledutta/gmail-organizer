@@ -17,7 +17,7 @@ def safe_execute(api_call, max_retries=5):
             return api_call.execute()
         except HttpError as e:
             if e.resp.status == 429:
-                wait_time = 60  # Default wait time (you could parse header info here)
+                wait_time = 60  # Default wait time (you could refine this by parsing headers)
                 print(f"Rate limit exceeded. Waiting for {wait_time} seconds before retrying...")
                 time.sleep(wait_time)
                 retry += 1
@@ -27,7 +27,7 @@ def safe_execute(api_call, max_retries=5):
 
 # --- Helper Function: Get or Create a Label ---
 def get_or_create_label(service, label_name):
-    response = safe_execute(service.users().labels().list(userId='me', includeSpamTrash=False))
+    response = safe_execute(service.users().labels().list(userId='me'))
     existing_labels = response.get('labels', [])
     label_ids = {label['name']: label['id'] for label in existing_labels}
     if label_name in label_ids:
@@ -66,8 +66,8 @@ Respond with only the exact category name.
         usage = response["usage"]
         cost = (usage["prompt_tokens"] * 0.0005 + usage["completion_tokens"] * 0.0015) / 1000
         print(f"🧠 {category} | 💵 ${cost:.6f} | 🧮 {usage['total_tokens']} tokens")
-        # Validate against allowed categories
-        allowed = ["Bank-Statements", "CreditCard-Statements", "Travel-Bookings", "Other-Bookings", "OTPs", "Purchases", "Social", "Finance", "Promotions", "Personal", "Uncategorized"]
+        allowed = ["Bank-Statements", "CreditCard-Statements", "Travel-Bookings", "Other-Bookings",
+                   "OTPs", "Purchases", "Social", "Finance", "Promotions", "Personal", "Uncategorized"]
         return category if category in allowed else "Uncategorized", cost
     except Exception as e:
         print(f"❌ GPT error: {e}")
@@ -80,11 +80,12 @@ def already_classified(label_ids, go_label_ids):
 # --- Main Function: Process Entire Inbox ---
 def classify_entire_inbox():
     service = authenticate_gmail()
-    # Get all labels (excluding spam/trash)
-    all_labels = safe_execute(service.users().labels().list(userId='me', includeSpamTrash=False)).get('labels', [])
+    # Get all labels (no includeSpamTrash parameter needed)
+    all_labels = safe_execute(service.users().labels().list(userId='me')).get('labels', [])
     label_name_to_id = {label['name']: label['id'] for label in all_labels}
     LABEL_PREFIX = "GO/"
-    categories = ["Bank-Statements", "CreditCard-Statements", "Travel-Bookings", "Other-Bookings", "OTPs", "Purchases", "Social", "Finance", "Promotions", "Personal", "Uncategorized"]
+    categories = ["Bank-Statements", "CreditCard-Statements", "Travel-Bookings", "Other-Bookings", "OTPs",
+                  "Purchases", "Social", "Finance", "Promotions", "Personal", "Uncategorized"]
     go_labels = [f"{LABEL_PREFIX}{cat}" for cat in categories]
     go_label_ids = [label_name_to_id.get(name) for name in go_labels if name in label_name_to_id]
 
@@ -101,8 +102,7 @@ def classify_entire_inbox():
         response = safe_execute(service.users().messages().list(
             userId='me',
             maxResults=50,
-            pageToken=next_page_token,
-            includeSpamTrash=False
+            pageToken=next_page_token
         ))
         messages = response.get('messages', [])
         if not messages:
@@ -114,7 +114,7 @@ def classify_entire_inbox():
         pages += 1
 
         for msg in messages:
-            if processed >= 10000:  # Change to your desired max
+            if processed >= 10000:  # Change to your desired max emails to process
                 break
 
             msg_data = safe_execute(service.users().messages().get(userId='me', id=msg['id']))
