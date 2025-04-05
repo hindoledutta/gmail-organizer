@@ -1,5 +1,6 @@
 import os
 import time
+import random
 from datetime import datetime
 from gmail_auth import authenticate_gmail
 from dotenv import load_dotenv
@@ -9,16 +10,22 @@ from googleapiclient.errors import HttpError
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# --- Helper Function: Safe Execute with Rate Limit Handling ---
-def safe_execute(api_call, max_retries=5):
+# --- Helper Function: Safe Execute with Exponential Backoff ---
+def safe_execute(api_call, max_retries=5, base_wait=60):
+    """
+    Executes the given Gmail API call.
+    If a 429 error (rate limit exceeded) occurs, it waits an exponentially increasing amount of time,
+    with a bit of random jitter, and retries the call.
+    """
     retry = 0
     while retry < max_retries:
         try:
             return api_call.execute()
         except HttpError as e:
             if e.resp.status == 429:
-                wait_time = 60  # Default wait time (you could refine this by parsing headers)
-                print(f"Rate limit exceeded. Waiting for {wait_time} seconds before retrying...")
+                # Calculate wait time: base_wait * (2^retry) plus random jitter between 0 and 10 seconds.
+                wait_time = base_wait * (2 ** retry) + random.uniform(0, 10)
+                print(f"Rate limit exceeded. Waiting for {wait_time:.0f} seconds before retrying... (Retry {retry+1}/{max_retries})")
                 time.sleep(wait_time)
                 retry += 1
             else:
@@ -80,7 +87,7 @@ def already_classified(label_ids, go_label_ids):
 # --- Main Function: Process Entire Inbox ---
 def classify_entire_inbox():
     service = authenticate_gmail()
-    # Get all labels (no includeSpamTrash parameter needed)
+    # Get all labels (without includeSpamTrash)
     all_labels = safe_execute(service.users().labels().list(userId='me')).get('labels', [])
     label_name_to_id = {label['name']: label['id'] for label in all_labels}
     LABEL_PREFIX = "GO/"
@@ -114,7 +121,7 @@ def classify_entire_inbox():
         pages += 1
 
         for msg in messages:
-            if processed >= 10000:  # Change to your desired max emails to process
+            if processed >= 10000:  # Set a max number to process
                 break
 
             msg_data = safe_execute(service.users().messages().get(userId='me', id=msg['id']))
